@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
@@ -14,7 +14,7 @@
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <FileVersion>1.0.0.0</FileVersion>
 
-    <!-- Output straight into bin\Release (no net9.0 subfolder) so build.ps1 paths are simple -->
+    <!-- Output straight into bin\Release (no net10.0 subfolder) so build.ps1 paths are simple -->
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <!-- We reference the server's own DLLs; never copy them into the mod output -->
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
@@ -28,6 +28,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+
     <!-- All Private=false: provided by the running server at load time, not shipped with the mod -->
     <Reference Include="SPTarkov.Server.Core">
       <HintPath>$(SptDir)\SPTarkov.Server.Core.dll</HintPath>
@@ -47,14 +49,6 @@
     </Reference>
     <Reference Include="SemanticVersioning">
       <HintPath>$(SptDir)\SemanticVersioning.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="Microsoft.Extensions.DependencyInjection.Abstractions">
-      <HintPath>$(SptDir)\Microsoft.Extensions.DependencyInjection.Abstractions.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="Microsoft.Extensions.Logging.Abstractions">
-      <HintPath>$(SptDir)\Microsoft.Extensions.Logging.Abstractions.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="WTT-ServerCommonLib">

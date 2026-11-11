@@ -1,53 +1,53 @@
 using System.Reflection;
+using SPTarkov.Common.Models.Logging;
 using SPTarkov.DI.Annotations;
 using SPTarkov.Server.Core.DI;
 using SPTarkov.Server.Core.Models.Common;
 using SPTarkov.Server.Core.Models.Eft.Common.Tables;
 using SPTarkov.Server.Core.Models.Spt.Mod;
+using SPTarkov.Server.Core.Models.Spt.Tables;
 using SPTarkov.Server.Core.Models.Utils;
 using SPTarkov.Server.Core.Services;
 
 namespace ModernWeaponMods;
 
 /// <summary>
-/// Mod metadata. All properties of AbstractModMetadata must be overridden
-/// (assign null for the ones you don't need). This declares a hard dependency
+/// Mod metadata. This declares a hard dependency
 /// on WTT-ServerCommonLib (com.wtt.commonlib), which provides the custom-item
 /// loader we use to clone attachments.
 /// </summary>
-public record ModMetadata : AbstractModMetadata
+public record ModMetadata : IModMetadata
 {
-    public override string ModGuid { get; init; } = "org.kilodyne.modernweaponmods";
+    public string ModGuid { get; init; } = "org.kilodyne.modernweaponmods";
 
-    public override string Name { get; init; } = "Modern Weapon Mods (MWM)";
+    public string Name { get; init; } = "Modern Weapon Mods (MWM)";
 
-    public override string Author { get; init; } = "Kilodyne";
+    public string Author { get; init; } = "Kilodyne";
 
-    public override List<string>? Contributors { get; init; }
+    public List<string>? Contributors { get; init; }
 
     // Mod version is pulled from the compiled assembly version (see .csproj <Version>).
-    public override SemanticVersioning.Version Version { get; init; } =
+    public SemanticVersioning.Version Version { get; init; } =
         new SemanticVersioning.Version(typeof(ModMetadata).Assembly.GetName().Version?.ToString(3));
 
-    // Built for SPT 4.0.13.
-    public override SemanticVersioning.Range SptVersion { get; init; } =
-        new SemanticVersioning.Range("~4.0.13");
+    // Built for SPT 4.1.x (4.1.6 tested target).
+    public SemanticVersioning.Range SptVersion { get; init; } =
+        new SemanticVersioning.Range("~4.1.0");
 
-    public override List<string>? Incompatibilities { get; init; }
+    public List<string>? Incompatibilities { get; init; }
 
-    // Requires WTT-ServerCommonLib >= 2.0.20 (provides CustomItemServiceExtended).
-    public override Dictionary<string, SemanticVersioning.Range>? ModDependencies { get; init; } =
+    // Requires WTT-CommonLib 3.x (>= 3.0.6) for SPT 4.1 (provides CustomItemServiceExtended).
+    public Dictionary<string, SemanticVersioning.Range>? ModDependencies { get; init; } =
         new Dictionary<string, SemanticVersioning.Range>
         {
-            { "com.wtt.commonlib", new SemanticVersioning.Range("^2.0.20") }
+            { "com.wtt.commonlib", new SemanticVersioning.Range("^3.0.6") }
         };
 
-    public override string? Url { get; init; }
+    public bool HasPrepatcher { get; init; }
 
-    // True because we ship a Unity asset bundle (the 3D model) + bundles.json.
-    public override bool? IsBundleMod { get; init; } = true;
+    public string? Url { get; init; }
 
-    public override string License { get; init; } = "MIT";
+    public string License { get; init; } = "MIT";
 }
 
 /// <summary>
@@ -55,7 +55,7 @@ public record ModMetadata : AbstractModMetadata
 /// our assembly to WTT-ServerCommonLib, which reads db/CustomItems/*.json sitting
 /// next to this DLL and clones the configured item(s) into the live database.
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = 400002)]
+[Injectable(InjectionType.Transient, 400002)]
 public class ModernWeaponMods : IOnLoad
 {
     private readonly WTTServerCommonLib.WTTServerCommonLib _wttCommon;
@@ -65,7 +65,7 @@ public class ModernWeaponMods : IOnLoad
         _wttCommon = wttCommon;
     }
 
-    public async Task OnLoad()
+    public async Task OnLoadAsync(CancellationToken cancellationToken)
     {
         var assembly = Assembly.GetExecutingAssembly();
 
@@ -105,10 +105,10 @@ public class ModernWeaponMods : IOnLoad
 /// any weapon's scope slot, not just riser-appropriate ones. See mwm-epicsaio-dependencies.md
 /// project memory for the full investigation.
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = int.MaxValue)]
+[Injectable(InjectionType.Transient, int.MaxValue)]
 public class RailScalesRiserCompat : IOnLoad
 {
-    private readonly DatabaseService _databaseService;
+    private readonly TemplateTable _templateTable;
     private readonly ISptLogger<RailScalesRiserCompat> _logger;
 
     // Anything that whitelists either of these should also whitelist our risers -- the vanilla
@@ -141,19 +141,19 @@ public class RailScalesRiserCompat : IOnLoad
         "95b745132cccd8b22aee3719", // Scalarworks LEAP/11 Deltapoint
     };
 
-    public RailScalesRiserCompat(DatabaseService databaseService, ISptLogger<RailScalesRiserCompat> logger)
+    public RailScalesRiserCompat(TemplateTable templateTable, ISptLogger<RailScalesRiserCompat> logger)
     {
-        _databaseService = databaseService;
+        _templateTable = templateTable;
         _logger = logger;
     }
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
         int patched = 0;
         int slotsChecked = 0;
         int slotsMatched = 0;
 
-        foreach (var (itemId, item) in _databaseService.GetItems())
+        foreach (var (itemId, item) in _templateTable.Items)
         {
             var slots = item.Properties?.Slots;
             if (slots == null) continue;
@@ -216,10 +216,10 @@ public class RailScalesRiserCompat : IOnLoad
 /// Axon-only, the FAST risers don't get it, since a light isn't something a riser would ever carry.
 /// Runs very late (int.MaxValue) so every other mod's items already exist in the DB.
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = int.MaxValue)]
+[Injectable(InjectionType.Transient, int.MaxValue)]
 public class FastRiserLaserCompat : IOnLoad
 {
-    private readonly DatabaseService _databaseService;
+    private readonly TemplateTable _templateTable;
     private readonly ISptLogger<FastRiserLaserCompat> _logger;
 
     // Anything that whitelists either of these tactical devices should also whitelist our stuff.
@@ -257,19 +257,19 @@ public class FastRiserLaserCompat : IOnLoad
         "2b3f25921683a313ba92de44", // Arisaka Inline Scout Mount Picatinny (FDE)
     };
 
-    public FastRiserLaserCompat(DatabaseService databaseService, ISptLogger<FastRiserLaserCompat> logger)
+    public FastRiserLaserCompat(TemplateTable templateTable, ISptLogger<FastRiserLaserCompat> logger)
     {
-        _databaseService = databaseService;
+        _templateTable = templateTable;
         _logger = logger;
     }
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
         int patched = 0;
         int slotsChecked = 0;
         int slotsMatched = 0;
 
-        foreach (var (itemId, item) in _databaseService.GetItems())
+        foreach (var (itemId, item) in _templateTable.Items)
         {
             var slots = item.Properties?.Slots;
             if (slots == null) continue;
@@ -347,10 +347,10 @@ public class FastRiserLaserCompat : IOnLoad
 /// stop, on any weapon or modded part, vanilla or otherwise. Runs very late (int.MaxValue) so
 /// every other mod's items already exist in the DB.
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = int.MaxValue)]
+[Injectable(InjectionType.Transient, int.MaxValue)]
 public class CtrRisrStockCompat : IOnLoad
 {
-    private readonly DatabaseService _databaseService;
+    private readonly TemplateTable _templateTable;
     private readonly ISptLogger<CtrRisrStockCompat> _logger;
 
     // Anything that whitelists either vanilla CTR color should also whitelist both of ours.
@@ -368,19 +368,19 @@ public class CtrRisrStockCompat : IOnLoad
         "6a672956e206c16778a0047d", // AR-15 Magpul CTR Carbine Stock, LaRue RISR (OD)
     };
 
-    public CtrRisrStockCompat(DatabaseService databaseService, ISptLogger<CtrRisrStockCompat> logger)
+    public CtrRisrStockCompat(TemplateTable templateTable, ISptLogger<CtrRisrStockCompat> logger)
     {
-        _databaseService = databaseService;
+        _templateTable = templateTable;
         _logger = logger;
     }
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
         int patched = 0;
         int slotsChecked = 0;
         int slotsMatched = 0;
 
-        foreach (var (itemId, item) in _databaseService.GetItems())
+        foreach (var (itemId, item) in _templateTable.Items)
         {
             var slots = item.Properties?.Slots;
             if (slots == null) continue;
@@ -432,10 +432,10 @@ public class CtrRisrStockCompat : IOnLoad
 /// time but never extended to these stocks. Runs very late (int.MaxValue) so every other mod's
 /// items already exist in the DB.
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = int.MaxValue)]
+[Injectable(InjectionType.Transient, int.MaxValue)]
 public class MoeSlkStockCompat : IOnLoad
 {
-    private readonly DatabaseService _databaseService;
+    private readonly TemplateTable _templateTable;
     private readonly ISptLogger<MoeSlkStockCompat> _logger;
 
     // Anything that whitelists the vanilla MOE SL-K (Coyote Tan) should also whitelist all three of
@@ -456,19 +456,19 @@ public class MoeSlkStockCompat : IOnLoad
         "450e86286d83f307f2b1d089", // AR-15 Magpul MOE SL-K Stock w/Riser (OD)
     };
 
-    public MoeSlkStockCompat(DatabaseService databaseService, ISptLogger<MoeSlkStockCompat> logger)
+    public MoeSlkStockCompat(TemplateTable templateTable, ISptLogger<MoeSlkStockCompat> logger)
     {
-        _databaseService = databaseService;
+        _templateTable = templateTable;
         _logger = logger;
     }
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
         int patched = 0;
         int slotsChecked = 0;
         int slotsMatched = 0;
 
-        foreach (var (itemId, item) in _databaseService.GetItems())
+        foreach (var (itemId, item) in _templateTable.Items)
         {
             var slots = item.Properties?.Slots;
             if (slots == null) continue;
@@ -527,10 +527,10 @@ public class MoeSlkStockCompat : IOnLoad
 /// (An earlier doc comment here wrongly claimed the Picatinny variants CLONE the WTT mount -- they don't,
 /// they clone the vanilla Kiba base, same as the M-LOK variants. See mwm-epicsaio-dependencies.md.)
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = int.MaxValue)]
+[Injectable(InjectionType.Transient, int.MaxValue)]
 public class ArisakaOsmCompat : IOnLoad
 {
-    private readonly DatabaseService _databaseService;
+    private readonly TemplateTable _templateTable;
     private readonly ISptLogger<ArisakaOsmCompat> _logger;
 
     // Anything that whitelists either of these should also whitelist our Picatinny OSM: the vanilla Kiba
@@ -617,19 +617,19 @@ public class ArisakaOsmCompat : IOnLoad
         "e621f9a5e1b03f21220aba6f", // Magpul XTM Rail Cover Long (OD) -- functional clone of KAC 5-Rib
     };
 
-    public ArisakaOsmCompat(DatabaseService databaseService, ISptLogger<ArisakaOsmCompat> logger)
+    public ArisakaOsmCompat(TemplateTable templateTable, ISptLogger<ArisakaOsmCompat> logger)
     {
-        _databaseService = databaseService;
+        _templateTable = templateTable;
         _logger = logger;
     }
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
         int patched = 0;
         int slotsChecked = 0;
         int slotsMatched = 0;
 
-        foreach (var (itemId, item) in _databaseService.GetItems())
+        foreach (var (itemId, item) in _templateTable.Items)
         {
             var slots = item.Properties?.Slots;
             if (slots == null) continue;
@@ -737,10 +737,10 @@ public class ArisakaOsmCompat : IOnLoad
 /// vanilla BCM GUNFIGHTER MOD 3 vertical foregrip (the real Picatinny/rail-clamp version of the same
 /// product) already fits. Runs very late (int.MaxValue) so every other mod's items already exist in the DB.
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = int.MaxValue)]
+[Injectable(InjectionType.Transient, int.MaxValue)]
 public class ArisakaFsCompat : IOnLoad
 {
-    private readonly DatabaseService _databaseService;
+    private readonly TemplateTable _templateTable;
     private readonly ISptLogger<ArisakaFsCompat> _logger;
 
     // Anything that whitelists the vanilla BCM GUNFIGHTER MOD 3 vertical foregrip (Picatinny) should also whitelist ours.
@@ -756,19 +756,19 @@ public class ArisakaFsCompat : IOnLoad
         "d9dd28ce797081ede516a64a", // Arisaka Finger Stop Picatinny (FDE)
     };
 
-    public ArisakaFsCompat(DatabaseService databaseService, ISptLogger<ArisakaFsCompat> logger)
+    public ArisakaFsCompat(TemplateTable templateTable, ISptLogger<ArisakaFsCompat> logger)
     {
-        _databaseService = databaseService;
+        _templateTable = templateTable;
         _logger = logger;
     }
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
         int patched = 0;
         int slotsChecked = 0;
         int slotsMatched = 0;
 
-        foreach (var (itemId, item) in _databaseService.GetItems())
+        foreach (var (itemId, item) in _templateTable.Items)
         {
             var slots = item.Properties?.Slots;
             if (slots == null) continue;
@@ -827,10 +827,10 @@ public class ArisakaFsCompat : IOnLoad
 /// one, but it's a valid complement to it. See mwm-epicsaio-dependencies.md project memory.) Runs very
 /// late (int.MaxValue) so every other mod's items already exist in the DB.
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = int.MaxValue)]
+[Injectable(InjectionType.Transient, int.MaxValue)]
 public class ArisakaFsForwardCompat : IOnLoad
 {
-    private readonly DatabaseService _databaseService;
+    private readonly TemplateTable _templateTable;
     private readonly ISptLogger<ArisakaFsForwardCompat> _logger;
 
     // Anything that whitelists the BT10 V8 Atlas Bipod (Picatinny) should also whitelist our Picatinny Forward Mount FS.
@@ -859,19 +859,19 @@ public class ArisakaFsForwardCompat : IOnLoad
         "e5b2a4e78c6ad51c9636e188", // Arisaka Finger Stop MLOK (Forward Mount) (FDE)
     };
 
-    public ArisakaFsForwardCompat(DatabaseService databaseService, ISptLogger<ArisakaFsForwardCompat> logger)
+    public ArisakaFsForwardCompat(TemplateTable templateTable, ISptLogger<ArisakaFsForwardCompat> logger)
     {
-        _databaseService = databaseService;
+        _templateTable = templateTable;
         _logger = logger;
     }
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
         int patched = 0;
         int slotsChecked = 0;
         int slotsMatched = 0;
 
-        foreach (var (itemId, item) in _databaseService.GetItems())
+        foreach (var (itemId, item) in _templateTable.Items)
         {
             var slots = item.Properties?.Slots;
             if (slots == null) continue;
@@ -946,10 +946,10 @@ public class ArisakaFsForwardCompat : IOnLoad
 /// aspects" as the PT-1 stock, so it shares this same targeting rather than getting its own pass.
 /// Runs very late (int.MaxValue) so every other mod's items already exist in the DB.
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = int.MaxValue)]
+[Injectable(InjectionType.Transient, int.MaxValue)]
 public class SigStockCompat : IOnLoad
 {
-    private readonly DatabaseService _databaseService;
+    private readonly TemplateTable _templateTable;
     private readonly ISptLogger<SigStockCompat> _logger;
 
     // Anything that whitelists the vanilla SIG Sauer Thin Side-Folding Stock should also whitelist ours.
@@ -967,19 +967,19 @@ public class SigStockCompat : IOnLoad
         "6fa394ebc653b3454e264ba3", // SIG Sauer Thin Side-Folding Stock w/Riser
     };
 
-    public SigStockCompat(DatabaseService databaseService, ISptLogger<SigStockCompat> logger)
+    public SigStockCompat(TemplateTable templateTable, ISptLogger<SigStockCompat> logger)
     {
-        _databaseService = databaseService;
+        _templateTable = templateTable;
         _logger = logger;
     }
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
         int patched = 0;
         int slotsChecked = 0;
         int slotsMatched = 0;
 
-        foreach (var (itemId, item) in _databaseService.GetItems())
+        foreach (var (itemId, item) in _templateTable.Items)
         {
             var slots = item.Properties?.Slots;
             if (slots == null) continue;
@@ -1035,10 +1035,10 @@ public class SigStockCompat : IOnLoad
 /// rather than either brand, since it now covers two different real-world manufacturers. Runs very
 /// late (int.MaxValue) so every other mod's items already exist in the DB.
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = int.MaxValue)]
+[Injectable(InjectionType.Transient, int.MaxValue)]
 public class Mp5StockAdapterCompat : IOnLoad
 {
-    private readonly DatabaseService _databaseService;
+    private readonly TemplateTable _templateTable;
     private readonly ISptLogger<Mp5StockAdapterCompat> _logger;
 
     // Anything that whitelists any of the vanilla HK MP5-native stocks should also whitelist ours.
@@ -1056,19 +1056,19 @@ public class Mp5StockAdapterCompat : IOnLoad
         "cb908c916f8cad0afaf8e40d", // HKParts MP5 AR Buffer Tube Adapter
     };
 
-    public Mp5StockAdapterCompat(DatabaseService databaseService, ISptLogger<Mp5StockAdapterCompat> logger)
+    public Mp5StockAdapterCompat(TemplateTable templateTable, ISptLogger<Mp5StockAdapterCompat> logger)
     {
-        _databaseService = databaseService;
+        _templateTable = templateTable;
         _logger = logger;
     }
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
         int patched = 0;
         int slotsChecked = 0;
         int slotsMatched = 0;
 
-        foreach (var (itemId, item) in _databaseService.GetItems())
+        foreach (var (itemId, item) in _templateTable.Items)
         {
             var slots = item.Properties?.Slots;
             if (slots == null) continue;
@@ -1126,10 +1126,10 @@ public class Mp5StockAdapterCompat : IOnLoad
 /// mod_pistol_grip Filter into each magwell color variant's own nested slot, so any AR-15/M4-pattern
 /// grip -- vanilla or third-party -- fits on top of the magwell too, with no hardcoded tpl list.
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = int.MaxValue)]
+[Injectable(InjectionType.Transient, int.MaxValue)]
 public class HrfRcmMagwellPistolGripCompat : IOnLoad
 {
-    private readonly DatabaseService _databaseService;
+    private readonly TemplateTable _templateTable;
     private readonly ISptLogger<HrfRcmMagwellPistolGripCompat> _logger;
 
     // Colt M4A1 -- a real, standard AR-15/M4-pattern receiver. Its own mod_pistol_grip slot is the
@@ -1154,15 +1154,15 @@ public class HrfRcmMagwellPistolGripCompat : IOnLoad
         "906b0021d4381dab57fcc027", // HRF Concepts RCM MCX Magwell (FDE)
     };
 
-    public HrfRcmMagwellPistolGripCompat(DatabaseService databaseService, ISptLogger<HrfRcmMagwellPistolGripCompat> logger)
+    public HrfRcmMagwellPistolGripCompat(TemplateTable templateTable, ISptLogger<HrfRcmMagwellPistolGripCompat> logger)
     {
-        _databaseService = databaseService;
+        _templateTable = templateTable;
         _logger = logger;
     }
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
-        var items = _databaseService.GetItems();
+        var items = _templateTable.Items;
 
         // Local function: find the named Slot's Filter on the given item, if any.
         HashSet<MongoId>? FindFilter(string ownerTpl, string slotName)
@@ -1228,10 +1228,10 @@ public class HrfRcmMagwellPistolGripCompat : IOnLoad
 /// variants into ONLY the listed weapons' own mod_pistol_grip Filter -- the inclusion-list mirror of
 /// AkTestMagwellExclusionsCompat's exclusion-list approach.
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = int.MaxValue)]
+[Injectable(InjectionType.Transient, int.MaxValue)]
 public class HrfRcmMagwellWeaponWhitelistCompat : IOnLoad
 {
-    private readonly DatabaseService _databaseService;
+    private readonly TemplateTable _templateTable;
     private readonly ISptLogger<HrfRcmMagwellWeaponWhitelistCompat> _logger;
 
     private const string PistolGripSlotName = "mod_pistol_grip";
@@ -1257,15 +1257,15 @@ public class HrfRcmMagwellWeaponWhitelistCompat : IOnLoad
         ("690ebacfc047a9a9f1a98782", "Colt RO991"),
     };
 
-    public HrfRcmMagwellWeaponWhitelistCompat(DatabaseService databaseService, ISptLogger<HrfRcmMagwellWeaponWhitelistCompat> logger)
+    public HrfRcmMagwellWeaponWhitelistCompat(TemplateTable templateTable, ISptLogger<HrfRcmMagwellWeaponWhitelistCompat> logger)
     {
-        _databaseService = databaseService;
+        _templateTable = templateTable;
         _logger = logger;
     }
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
-        var items = _databaseService.GetItems();
+        var items = _templateTable.Items;
         int addedTo = 0;
 
         foreach (var (weaponTpl, name) in WhitelistedWeapons)
@@ -1322,10 +1322,10 @@ public class HrfRcmMagwellWeaponWhitelistCompat : IOnLoad
 /// M4-pattern-tuned magwells onto the HK416 and vice versa). Same whitelist-injection mechanism as
 /// HrfRcmMagwellWeaponWhitelistCompat, just scoped to these two tpls and this one weapon.
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = int.MaxValue)]
+[Injectable(InjectionType.Transient, int.MaxValue)]
 public class HrfRcmMagwellHk416WeaponWhitelistCompat : IOnLoad
 {
-    private readonly DatabaseService _databaseService;
+    private readonly TemplateTable _templateTable;
     private readonly ISptLogger<HrfRcmMagwellHk416WeaponWhitelistCompat> _logger;
 
     private const string PistolGripSlotName = "mod_pistol_grip";
@@ -1338,15 +1338,15 @@ public class HrfRcmMagwellHk416WeaponWhitelistCompat : IOnLoad
         "6881caf875719354716dcbc0", // HRF Concepts RCM HK416 Magwell (FDE)
     };
 
-    public HrfRcmMagwellHk416WeaponWhitelistCompat(DatabaseService databaseService, ISptLogger<HrfRcmMagwellHk416WeaponWhitelistCompat> logger)
+    public HrfRcmMagwellHk416WeaponWhitelistCompat(TemplateTable templateTable, ISptLogger<HrfRcmMagwellHk416WeaponWhitelistCompat> logger)
     {
-        _databaseService = databaseService;
+        _templateTable = templateTable;
         _logger = logger;
     }
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
-        var items = _databaseService.GetItems();
+        var items = _templateTable.Items;
 
         if (!items.TryGetValue(Hk416Tpl, out var weapon))
         {
@@ -1395,10 +1395,10 @@ public class HrfRcmMagwellHk416WeaponWhitelistCompat : IOnLoad
 /// (there's no separate "SCAR-L LB" weapon tpl in the item DB -- long-barrel SCAR-L builds use the same
 /// weapon-root tpl with a different barrel attached, so whitelisting the weapon-root covers it too).
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = int.MaxValue)]
+[Injectable(InjectionType.Transient, int.MaxValue)]
 public class HrfRcmMagwellScarLWeaponWhitelistCompat : IOnLoad
 {
-    private readonly DatabaseService _databaseService;
+    private readonly TemplateTable _templateTable;
     private readonly ISptLogger<HrfRcmMagwellScarLWeaponWhitelistCompat> _logger;
 
     private const string PistolGripSlotName = "mod_pistol_grip";
@@ -1418,15 +1418,15 @@ public class HrfRcmMagwellScarLWeaponWhitelistCompat : IOnLoad
         "cbbe5de32eac15d64ae03022", // HRF Concepts RCM SCAR-L Magwell (FDE)
     };
 
-    public HrfRcmMagwellScarLWeaponWhitelistCompat(DatabaseService databaseService, ISptLogger<HrfRcmMagwellScarLWeaponWhitelistCompat> logger)
+    public HrfRcmMagwellScarLWeaponWhitelistCompat(TemplateTable templateTable, ISptLogger<HrfRcmMagwellScarLWeaponWhitelistCompat> logger)
     {
-        _databaseService = databaseService;
+        _templateTable = templateTable;
         _logger = logger;
     }
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
-        var items = _databaseService.GetItems();
+        var items = _templateTable.Items;
         int addedTo = 0;
 
         foreach (var weaponTpl in ScarLTpls)
@@ -1482,10 +1482,10 @@ public class HrfRcmMagwellScarLWeaponWhitelistCompat : IOnLoad
 /// MCX added by EpicsAIO -- two genuinely different weapon-root tpls, unlike SCAR-L's LB variant which
 /// shares one tpl.
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = int.MaxValue)]
+[Injectable(InjectionType.Transient, int.MaxValue)]
 public class HrfRcmMagwellMcxWeaponWhitelistCompat : IOnLoad
 {
-    private readonly DatabaseService _databaseService;
+    private readonly TemplateTable _templateTable;
     private readonly ISptLogger<HrfRcmMagwellMcxWeaponWhitelistCompat> _logger;
 
     private const string PistolGripSlotName = "mod_pistol_grip";
@@ -1504,15 +1504,15 @@ public class HrfRcmMagwellMcxWeaponWhitelistCompat : IOnLoad
         "906b0021d4381dab57fcc027", // HRF Concepts RCM MCX Magwell (FDE)
     };
 
-    public HrfRcmMagwellMcxWeaponWhitelistCompat(DatabaseService databaseService, ISptLogger<HrfRcmMagwellMcxWeaponWhitelistCompat> logger)
+    public HrfRcmMagwellMcxWeaponWhitelistCompat(TemplateTable templateTable, ISptLogger<HrfRcmMagwellMcxWeaponWhitelistCompat> logger)
     {
-        _databaseService = databaseService;
+        _templateTable = templateTable;
         _logger = logger;
     }
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
-        var items = _databaseService.GetItems();
+        var items = _templateTable.Items;
         int addedTo = 0;
 
         foreach (var (weaponTpl, name) in McxWeapons)
@@ -1578,10 +1578,10 @@ public class HrfRcmMagwellMcxWeaponWhitelistCompat : IOnLoad
 /// slot at load time, so any pistol grip that fits a real AK -- vanilla or from any other installed
 /// mod -- automatically fits on top of the magwell too, with no hardcoded tpl list to maintain.
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = int.MaxValue)]
+[Injectable(InjectionType.Transient, int.MaxValue)]
 public class AkTestMagwellPistolGripCompat : IOnLoad
 {
-    private readonly DatabaseService _databaseService;
+    private readonly TemplateTable _templateTable;
     private readonly ISptLogger<AkTestMagwellPistolGripCompat> _logger;
 
     // Kalashnikov AK-74M -- a real, standard AK-pattern receiver. Its own mod_pistol_grip slot is
@@ -1596,15 +1596,15 @@ public class AkTestMagwellPistolGripCompat : IOnLoad
     private const string OurMagwellTpl = "352765af2bdf69fc66bae7d1";
     private const string OurSlotName = "mwm_akts_grip_mount";
 
-    public AkTestMagwellPistolGripCompat(DatabaseService databaseService, ISptLogger<AkTestMagwellPistolGripCompat> logger)
+    public AkTestMagwellPistolGripCompat(TemplateTable templateTable, ISptLogger<AkTestMagwellPistolGripCompat> logger)
     {
-        _databaseService = databaseService;
+        _templateTable = templateTable;
         _logger = logger;
     }
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
-        var items = _databaseService.GetItems();
+        var items = _templateTable.Items;
 
         // Local function: find the named Slot's Filter on the given item, if any. Left as a local
         // function (not a static method) so its parameter type is inferred from the closure instead
@@ -1667,10 +1667,10 @@ public class AkTestMagwellPistolGripCompat : IOnLoad
 /// This runs after that broadcast (same int.MaxValue late-load tier as every other Compat class here)
 /// and strips the magwell's own tpl back out of each listed weapon's mod_pistol_grip Filter.
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = int.MaxValue)]
+[Injectable(InjectionType.Transient, int.MaxValue)]
 public class AkTestMagwellExclusionsCompat : IOnLoad
 {
-    private readonly DatabaseService _databaseService;
+    private readonly TemplateTable _templateTable;
     private readonly ISptLogger<AkTestMagwellExclusionsCompat> _logger;
 
     private const string OurMagwellTpl = "352765af2bdf69fc66bae7d1";
@@ -1690,15 +1690,15 @@ public class AkTestMagwellExclusionsCompat : IOnLoad
         ("679a6a534f3d279c99b135b9", "AN-94 \"Kirov's Custom\""),
     };
 
-    public AkTestMagwellExclusionsCompat(DatabaseService databaseService, ISptLogger<AkTestMagwellExclusionsCompat> logger)
+    public AkTestMagwellExclusionsCompat(TemplateTable templateTable, ISptLogger<AkTestMagwellExclusionsCompat> logger)
     {
-        _databaseService = databaseService;
+        _templateTable = templateTable;
         _logger = logger;
     }
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
-        var items = _databaseService.GetItems();
+        var items = _templateTable.Items;
         int removedFrom = 0;
 
         foreach (var (tpl, name) in ExcludedWeapons)
@@ -1765,10 +1765,10 @@ public class AkTestMagwellExclusionsCompat : IOnLoad
 /// conflict with these optics in the data. Runs very late (int.MaxValue) so every other mod's items
 /// already exist in the DB.
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = int.MaxValue)]
+[Injectable(InjectionType.Transient, int.MaxValue)]
 public class MagnifiedOpticRearSightCompat : IOnLoad
 {
-    private readonly DatabaseService _databaseService;
+    private readonly TemplateTable _templateTable;
     private readonly ISptLogger<MagnifiedOpticRearSightCompat> _logger;
 
     // Every optic with a built-in magnifier: vanilla HHS-1 (both colors) + all 9 EpicsAIO
@@ -1915,15 +1915,15 @@ public class MagnifiedOpticRearSightCompat : IOnLoad
         "67c5422726265106dd0697a2", // M1895/MXLR XS Marlin Ghost Ring rear sight
     };
 
-    public MagnifiedOpticRearSightCompat(DatabaseService databaseService, ISptLogger<MagnifiedOpticRearSightCompat> logger)
+    public MagnifiedOpticRearSightCompat(TemplateTable templateTable, ISptLogger<MagnifiedOpticRearSightCompat> logger)
     {
-        _databaseService = databaseService;
+        _templateTable = templateTable;
         _logger = logger;
     }
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
-        var items = _databaseService.GetItems();
+        var items = _templateTable.Items;
         int magnifiersPatched = 0;
         int rearSightsPatched = 0;
 
@@ -1977,10 +1977,10 @@ public class MagnifiedOpticRearSightCompat : IOnLoad
 /// these two receivers (not a broad "wherever the Delta rail fits" mirror), per the user's explicit
 /// ask. Runs very late (int.MaxValue) so both other mods' items already exist in the DB.
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = int.MaxValue)]
+[Injectable(InjectionType.Transient, int.MaxValue)]
 public class GooseneckM16UpperCompat : IOnLoad
 {
-    private readonly DatabaseService _databaseService;
+    private readonly TemplateTable _templateTable;
     private readonly ISptLogger<GooseneckM16UpperCompat> _logger;
 
     private const string GooseneckTpl = "66713838ca123f9df8e7584e"; // EpicsAIO Precision Reflex Carry Handle Mount "Gooseneck"
@@ -1993,15 +1993,15 @@ public class GooseneckM16UpperCompat : IOnLoad
         ("68a63b9b8e1fe612970728f7", "M16A2 5.56x45 upper receiver"),
     };
 
-    public GooseneckM16UpperCompat(DatabaseService databaseService, ISptLogger<GooseneckM16UpperCompat> logger)
+    public GooseneckM16UpperCompat(TemplateTable templateTable, ISptLogger<GooseneckM16UpperCompat> logger)
     {
-        _databaseService = databaseService;
+        _templateTable = templateTable;
         _logger = logger;
     }
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
-        var items = _databaseService.GetItems();
+        var items = _templateTable.Items;
         int addedTo = 0;
 
         foreach (var (tpl, name) in TargetReceivers)
@@ -2071,10 +2071,10 @@ public class GooseneckM16UpperCompat : IOnLoad
 /// mirrored set, in both directions (hosted by our riser, and treated as trigger tpls for where our
 /// riser fits).
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = int.MaxValue)]
+[Injectable(InjectionType.Transient, int.MaxValue)]
 public class FsRiserFrontSightHostCompat : IOnLoad
 {
-    private readonly DatabaseService _databaseService;
+    private readonly TemplateTable _templateTable;
     private readonly ISptLogger<FsRiserFrontSightHostCompat> _logger;
 
     private const string ReferenceHandguardTpl = "588b56d02459771481110ae2"; // AR-15 Daniel Defense RIS II 9.5 handguard (Black)
@@ -2096,15 +2096,15 @@ public class FsRiserFrontSightHostCompat : IOnLoad
         "66ba2a7583204e25695233c0", // Magpul MBUS Gen3 flip-up front sight (WTT-Armory)
     };
 
-    public FsRiserFrontSightHostCompat(DatabaseService databaseService, ISptLogger<FsRiserFrontSightHostCompat> logger)
+    public FsRiserFrontSightHostCompat(TemplateTable templateTable, ISptLogger<FsRiserFrontSightHostCompat> logger)
     {
-        _databaseService = databaseService;
+        _templateTable = templateTable;
         _logger = logger;
     }
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
-        var items = _databaseService.GetItems();
+        var items = _templateTable.Items;
 
         HashSet<MongoId>? FindFilter(string ownerTpl, string slotName)
         {
@@ -2171,10 +2171,10 @@ public class FsRiserFrontSightHostCompat : IOnLoad
 /// for how that reference set was derived, including the 3 extra tpls added 2026-07-18. Runs very late
 /// (int.MaxValue) so every other mod's items already exist in the DB.
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = int.MaxValue)]
+[Injectable(InjectionType.Transient, int.MaxValue)]
 public class FsRiserMountCompat : IOnLoad
 {
-    private readonly DatabaseService _databaseService;
+    private readonly TemplateTable _templateTable;
     private readonly ISptLogger<FsRiserMountCompat> _logger;
 
     private const string FrontSightSlotName = "mod_sight_front";
@@ -2205,19 +2205,19 @@ public class FsRiserMountCompat : IOnLoad
         "66ba2a7583204e25695233c0", // Magpul MBUS Gen3 flip-up front sight (WTT-Armory)
     };
 
-    public FsRiserMountCompat(DatabaseService databaseService, ISptLogger<FsRiserMountCompat> logger)
+    public FsRiserMountCompat(TemplateTable templateTable, ISptLogger<FsRiserMountCompat> logger)
     {
-        _databaseService = databaseService;
+        _templateTable = templateTable;
         _logger = logger;
     }
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
         int patched = 0;
         int slotsChecked = 0;
         int slotsMatched = 0;
 
-        foreach (var (itemId, item) in _databaseService.GetItems())
+        foreach (var (itemId, item) in _templateTable.Items)
         {
             var slots = item.Properties?.Slots;
             if (slots == null) continue;
@@ -2268,10 +2268,10 @@ public class FsRiserMountCompat : IOnLoad
 /// addtoModSlots: true), so this runs its own independent DB walk instead of trusting WTT's mechanism.
 /// Runs very late (int.MaxValue) so every other mod's items already exist in the DB.
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = int.MaxValue)]
+[Injectable(InjectionType.Transient, int.MaxValue)]
 public class LmtPdwBufferTubeCompat : IOnLoad
 {
-    private readonly DatabaseService _databaseService;
+    private readonly TemplateTable _templateTable;
     private readonly ISptLogger<LmtPdwBufferTubeCompat> _logger;
 
     // Anything that whitelists the vanilla AR-15 Colt Carbine buffer tube should also whitelist ours.
@@ -2286,19 +2286,19 @@ public class LmtPdwBufferTubeCompat : IOnLoad
         "62068c0e5c79b2d4921ce5b2", // LMT PDW Buffer Tube
     };
 
-    public LmtPdwBufferTubeCompat(DatabaseService databaseService, ISptLogger<LmtPdwBufferTubeCompat> logger)
+    public LmtPdwBufferTubeCompat(TemplateTable templateTable, ISptLogger<LmtPdwBufferTubeCompat> logger)
     {
-        _databaseService = databaseService;
+        _templateTable = templateTable;
         _logger = logger;
     }
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
         int patched = 0;
         int slotsChecked = 0;
         int slotsMatched = 0;
 
-        foreach (var (itemId, item) in _databaseService.GetItems())
+        foreach (var (itemId, item) in _templateTable.Items)
         {
             var slots = item.Properties?.Slots;
             if (slots == null) continue;
@@ -2348,10 +2348,10 @@ public class LmtPdwBufferTubeCompat : IOnLoad
 /// instead of trusting WTT's mechanism. Runs very late (int.MaxValue) so every other mod's items
 /// already exist in the DB.
 /// </summary>
-[Injectable(InjectionType.Scoped, null, int.MaxValue, TypePriority = int.MaxValue)]
+[Injectable(InjectionType.Transient, int.MaxValue)]
 public class UlssStockCompat : IOnLoad
 {
-    private readonly DatabaseService _databaseService;
+    private readonly TemplateTable _templateTable;
     private readonly ISptLogger<UlssStockCompat> _logger;
 
     // Anything that whitelists the vanilla MPX/MCX PMM ULSS stock should also whitelist ours.
@@ -2366,19 +2366,19 @@ public class UlssStockCompat : IOnLoad
         "ba7860823b20502455fce227", // MPX/MCX PMM ULSS stock w/Riser
     };
 
-    public UlssStockCompat(DatabaseService databaseService, ISptLogger<UlssStockCompat> logger)
+    public UlssStockCompat(TemplateTable templateTable, ISptLogger<UlssStockCompat> logger)
     {
-        _databaseService = databaseService;
+        _templateTable = templateTable;
         _logger = logger;
     }
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
         int patched = 0;
         int slotsChecked = 0;
         int slotsMatched = 0;
 
-        foreach (var (itemId, item) in _databaseService.GetItems())
+        foreach (var (itemId, item) in _templateTable.Items)
         {
             var slots = item.Properties?.Slots;
             if (slots == null) continue;

@@ -16,7 +16,7 @@ namespace ModernWeaponModsClient;
 /// ModSlotView.Show just skips setting the background image entirely and logs an error -- leaving the
 /// slot rendered as a blank white square when empty in the inspect window (confirmed by decompile).
 ///
-/// IMPORTANT: an earlier version of this patch tried to Harmony-patch CacheResourcesPopAbstractClass.
+/// IMPORTANT: an earlier version of this patch tried to Harmony-patch EFT.Utilities.ResourcesCache.
 /// Pop&lt;TV&gt; directly (the generic resource-cache lookup ModSlotView.Show calls internally) and swap
 /// just the one key. That crashed MonoMod's IL detour builder with a NotSupportedException while
 /// importing the open generic parameter TV -- confirmed via BepInEx's log once WriteUnityLog was
@@ -24,7 +24,7 @@ namespace ModernWeaponModsClient;
 /// note for the general pattern). That exception propagated out of Harmony's PatchAll() and aborted
 /// this whole plugin's Awake() -- which is why every other magwell render/label fix broke too, not just
 /// this one. Patching open generic methods isn't viable in this runtime; the fix instead Prefixes the
-/// concrete, non-generic ModSlotView.Show and calls CacheResourcesPopAbstractClass.Pop&lt;Sprite&gt;
+/// concrete, non-generic ModSlotView.Show and calls EFT.Utilities.ResourcesCache.Pop&lt;Sprite&gt;
 /// normally (an ordinary compiled call, not a Harmony detour target) to fetch the real mod_pistol_grip
 /// placeholder and set it directly for our slot, before the original method runs. The original's own
 /// (failed) lookup for our slot's real name still returns null afterward, so it never overwrites what
@@ -48,7 +48,7 @@ public static class MagwellGripSlotIconRedirectPatch
     {
         if (slot == null || !OurSlotNames.Contains(slot.Name)) return;
 
-        Sprite sprite = CacheResourcesPopAbstractClass.Pop<Sprite>(RedirectKey);
+        Sprite sprite = EFT.Utilities.ResourcesCache.Pop<Sprite>(RedirectKey);
         if (sprite != null)
         {
             __instance.SetSlotBackImage(sprite);
@@ -58,16 +58,16 @@ public static class MagwellGripSlotIconRedirectPatch
 
 /// <summary>
 /// Same root cause as MagwellGripSlotIconRedirectPatch, different lookup: ModSlotView.Show also sets
-/// the slot's text label from GClass2348.Localized(slot.Name, ...).ToUpper() -- a locale-table lookup
+/// the slot's text label from EFT.LocalizationExtensions.Localized(slot.Name, ...).ToUpper() -- a locale-table lookup
 /// keyed by the slot's raw name. Vanilla slot names like "mod_pistol_grip" have a real locale entry
 /// ("Pistol Grip"); our made-up slot names don't, so Localized falls back to returning the raw key
 /// unchanged, showing the raw slot name as the label instead of "PISTOL GRIP".
 ///
-/// Redirects the same set of slot names, this time through GClass2348.Localized(string, string) -- the
+/// Redirects the same set of slot names, this time through EFT.LocalizationExtensions.Localized(string, string) -- the
 /// (id, prefix) overload ModSlotView.Show actually calls -- so the localized label matches whatever
 /// language the player's client is set to, not just a hardcoded English string.
 /// </summary>
-[HarmonyPatch(typeof(GClass2348), "Localized", typeof(string), typeof(string))]
+[HarmonyPatch(typeof(EFT.LocalizationExtensions), "Localized", typeof(string), typeof(string))]
 public static class MagwellGripSlotLabelRedirectPatch
 {
     private static readonly HashSet<string> OurSlotNames = new()

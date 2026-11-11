@@ -1,5 +1,5 @@
 # Builds the mod DLL and deploys it into the live SPT mod folder.
-# Requires the .NET 9 SDK (the SPT 4.0 server targets net9.0).
+# Requires the .NET 10 SDK (SPT 4.1.x targets net10.0; 4.1.6 tested).
 $ErrorActionPreference = "Stop"
 
 $src = "D:\SPT\_ModDev\ModernWeaponMods"
