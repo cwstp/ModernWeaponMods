@@ -10,36 +10,36 @@ namespace ModernWeaponModsClient;
 
 /// <summary>
 /// Fixes a vanilla EFT client bug in the weapon build screen's Assemble algorithm
-/// (GClass3470.smethod_0), confirmed via decompilation, not a WeaponCustomizer or WTT-ServerCommonLib
+/// (WeaponAssembler.AssembleAsync), confirmed via decompilation, not a WeaponCustomizer or WTT-ServerCommonLib
 /// interaction. Repro: a mod A sits in slot S on a weapon. In one continuous build-screen session,
 /// remove A, attach an intermediary item I (which exposes its own nested version of slot S), then
 /// reattach the same-template A into I's nested slot, then Assemble. The build reports success but I
 /// never actually attaches.
 ///
-/// Root cause: smethod_0's first pass matches every currently-installed real mod to a target slot by
+/// Root cause: AssembleAsync's first pass matches every currently-installed real mod to a target slot by
 /// template only (Slot.FullId is "{slotName} {parentItem.TemplateId}", i.e. purely structural -- not
 /// instance-based). When A's real instance matches the *nested* target inside I, the original keeps A
 /// exactly where it currently sits and just schedules a later move -- it never proactively vacates A's
 /// current slot. But that current slot is exactly where I itself needs to go. Neither can be placed
 /// first: I needs A's slot freed, A needs I's nested slot to exist (which only happens once I is
-/// installed). GClass3470.smethod_2 retries the whole plan for 5 passes and then silently gives up on
+/// installed). The vanilla planner retries the whole plan for 5 passes and then silently gives up on
 /// both entries -- no exception, no rollback, no error shown to the player.
 ///
-/// Fix: reimplement smethod_0, reusing its own (public) smethod_1-5 helpers unchanged, and add one
+/// Fix: reimplement AssembleAsync, reusing its public helpers, and add one
 /// targeted check in the first pass: if a currently-installed mod's own current slot is exactly what
 /// some other still-pending target entry needs, evacuate that mod to the sorting table right away
-/// (instead of "keeping it in place") and hand it to the existing pool-based matching (loop 2 /
-/// smethod_4) that already correctly handles multi-level nesting for brand-new items. This only
+/// (instead of "keeping it in place") and hand it to the existing pool-based matching that already
+/// correctly handles multi-level nesting for brand-new items. This only
 /// changes behavior for the genuinely circular case; every other (already-working) assemble path is
 /// untouched.
 /// </summary>
-[HarmonyPatch(typeof(GClass3470), "smethod_0")]
+[HarmonyPatch(typeof(WeaponAssembler), "AssembleAsync")]
 public static class AssembleCircularSlotFixPatch
 {
     private static readonly ManualLogSource Log = BepInEx.Logging.Logger.CreateLogSource("MWM-AssembleFix");
 
     [HarmonyPrefix]
-    public static bool Prefix(Weapon itemBody, Weapon buildWeapon, InventoryController inventoryController, IEnumerable<Item> playerItems, bool simulate, ref GStruct156<IEnumerable<GClass3411>> __result)
+    public static bool Prefix(Weapon itemBody, Weapon buildWeapon, InventoryController inventoryController, IEnumerable<Item> playerItems, bool simulate, ref Option<IEnumerable<MoveResult>> __result)
     {
         try
         {
@@ -53,107 +53,105 @@ public static class AssembleCircularSlotFixPatch
         return false;
     }
 
-    private static GStruct156<IEnumerable<GClass3411>> ComputeAssemblePlan(Weapon itemBody, Weapon buildWeapon, InventoryController inventoryController, IEnumerable<Item> playerItems, bool simulate)
+    private static Option<IEnumerable<MoveResult>> ComputeAssemblePlan(Weapon itemBody, Weapon buildWeapon, InventoryController inventoryController, IEnumerable<Item> playerItems, bool simulate)
     {
-        GClass3470.Struct904 struct904_ = default;
-        struct904_.inventoryController = inventoryController;
+        WeaponAssembler.CG_AssembleAsync2 state = default;
+        state.inventoryController = inventoryController;
 
         Stack<Slot> targetSlots = new Stack<Slot>(buildWeapon.Slots.Concat(buildWeapon.Chambers));
-        struct904_.modsWithSlots = GClass3470.smethod_3(targetSlots, (Mod mod, Slot slot) => new GClass3470.Class2492(mod, slot.FullId));
+        state.modsWithSlots = WeaponAssembler.ConvertSlotsLayerByLayer(targetSlots, (Mod mod, Slot slot) => new WeaponAssembler.ModWithSlot(mod, slot.FullId));
 
-        struct904_.playerMods = playerItems.OfType<Mod>()
+        state.playerMods = playerItems.OfType<Mod>()
             .Where(item => item.Parent.Container.ParentItem.IsContainer && item.PinLockState != EItemPinLockState.Locked)
             .ToList();
 
-        SortingTableItemClass sortingTable = struct904_.inventoryController.Inventory.SortingTable;
-        struct904_.sortingTableGrid = sortingTable.Grid;
+        state.sortingTableGrid = state.inventoryController.Inventory.SortingTable.Grid;
 
-        List<Mod> currentlyInstalled = GClass3470.smethod_3(new Stack<Slot>(itemBody.Slots.Concat(itemBody.Chambers)), (Mod mod, Slot _) => mod);
-        struct904_.modsToInstall = new List<GClass3470.Class2492>();
-        struct904_.moveOperations = new List<GClass3411>();
+        List<Mod> currentlyInstalled = WeaponAssembler.ConvertSlotsLayerByLayer(new Stack<Slot>(itemBody.Slots.Concat(itemBody.Chambers)), (Mod mod, Slot _) => mod);
+        state.modsToInstall = new List<WeaponAssembler.ModWithSlot>();
+        state.moveOperations = new List<MoveResult>();
 
         try
         {
             for (int num = currentlyInstalled.Count - 1; num >= 0; num--)
             {
                 Mod item2 = currentlyInstalled[num];
-                GClass3470.Class2492 matchedTarget = struct904_.modsWithSlots.FirstOrDefault(x => x.Mod.TemplateId == item2.TemplateId);
+                WeaponAssembler.ModWithSlot matchedTarget = state.modsWithSlots.FirstOrDefault(x => x.Mod.TemplateId == item2.TemplateId);
 
                 if (matchedTarget != null)
                 {
                     bool blocksAnotherPendingTarget = item2.Parent.Container is Slot currentSlot
-                        && struct904_.modsWithSlots.Any(x => x != matchedTarget && x.SlotId == currentSlot.FullId);
+                        && state.modsWithSlots.Any(x => x != matchedTarget && x.SlotId == currentSlot.FullId);
 
                     if (blocksAnotherPendingTarget)
                     {
                         Log.LogInfo($"Deadlock guard fired: {item2.TemplateId} currently occupies a slot another pending item needs -- evacuating to sorting table instead of keeping it in place.");
-                        EvacuateMod(item2, ref struct904_);
-                        struct904_.playerMods.Add(item2);
+                        EvacuateMod(item2, ref state);
+                        state.playerMods.Add(item2);
                     }
                     else
                     {
-                        struct904_.modsWithSlots.Remove(matchedTarget);
-                        struct904_.modsToInstall.Add(new GClass3470.Class2492(item2, matchedTarget.SlotId));
+                        state.modsWithSlots.Remove(matchedTarget);
+                        state.modsToInstall.Add(new WeaponAssembler.ModWithSlot(item2, matchedTarget.SlotId));
                     }
                 }
                 else
                 {
-                    EvacuateMod(item2, ref struct904_);
+                    EvacuateMod(item2, ref state);
                 }
             }
 
-            while (struct904_.modsWithSlots.Count > 0)
+            while (state.modsWithSlots.Count > 0)
             {
-                GClass3470.Class2492 slot2 = struct904_.modsWithSlots[0];
-                struct904_.modsWithSlots.RemoveAt(0);
-                Mod mod2 = struct904_.playerMods.FirstOrDefault(playerItem => playerItem.TemplateId == slot2.Mod.TemplateId);
+                WeaponAssembler.ModWithSlot slot2 = state.modsWithSlots[0];
+                state.modsWithSlots.RemoveAt(0);
+                Mod mod2 = state.playerMods.FirstOrDefault(playerItem => playerItem.TemplateId == slot2.Mod.TemplateId);
                 if (mod2 != null)
                 {
-                    GClass3470.smethod_4(mod2, slot2, ref struct904_);
+                    WeaponAssembler.CG_AssembleAsync(mod2, slot2, ref state);
                 }
             }
 
-            foreach (GStruct154<GClass3411> item3 in GClass3470.smethod_2(itemBody, struct904_.modsToInstall, struct904_.inventoryController))
+            foreach (OperationResult<MoveResult> item3 in WeaponAssembler.AssembleOperationsList(itemBody, state.modsToInstall, state.inventoryController))
             {
-                GClass3470.smethod_5(item3, ref struct904_);
+                WeaponAssembler.CG_AssembleAsync1(item3, ref state);
             }
 
-            StashGridClass[] mainStorage = struct904_.inventoryController.MainStorage;
-            foreach (Item item4 in struct904_.sortingTableGrid.Items.ToList())
+            foreach (Item item4 in state.sortingTableGrid.Items.ToList())
             {
-                GClass3393 to3 = GClass3119.FindLocationForItem(mainStorage, item4);
-                GClass3470.smethod_5(InteractionsHandlerClass.Move(item4, to3, struct904_.inventoryController), ref struct904_);
+                GridItemAddress to3 = GridExtensions.FindLocationForItem(state.inventoryController.MainStorage, item4);
+                WeaponAssembler.CG_AssembleAsync1(ItemManipulator.Move(item4, to3, state.inventoryController, false), ref state);
             }
         }
-        catch (GClass3470.Exception4 exception)
+        catch (WeaponAssembler.AbortException exception)
         {
-            GClass3399.RollBack(struct904_.moveOperations);
+            InventoryOperationExtensions.RollBack<MoveResult>(state.moveOperations);
             return exception.Error;
         }
         catch (Exception ex)
         {
-            GClass3399.RollBack(struct904_.moveOperations);
-            return new GClass1522(ex.Message);
+            InventoryOperationExtensions.RollBack<MoveResult>(state.moveOperations);
+            return new StringError(ex.Message);
         }
 
         if (simulate)
         {
-            GClass3399.RollBack(struct904_.moveOperations);
+            InventoryOperationExtensions.RollBack<MoveResult>(state.moveOperations);
         }
-        return new GStruct156<IEnumerable<GClass3411>>((IEnumerable<GClass3411>)struct904_.moveOperations);
+        return new Option<IEnumerable<MoveResult>>(state.moveOperations);
     }
 
-    private static void EvacuateMod(Mod item2, ref GClass3470.Struct904 struct904_0)
+    private static void EvacuateMod(Mod item2, ref WeaponAssembler.CG_AssembleAsync2 state)
     {
         foreach (Slot slot3 in item2.Slots)
         {
             if (slot3.ContainedItem != null)
             {
-                GClass3393 to = struct904_0.sortingTableGrid.FindLocationForItem(slot3.ContainedItem);
-                GClass3470.smethod_5(InteractionsHandlerClass.Move(slot3.ContainedItem, to, struct904_0.inventoryController), ref struct904_0);
+                GridItemAddress to = state.sortingTableGrid.FindLocationForItem(slot3.ContainedItem);
+                WeaponAssembler.CG_AssembleAsync1(ItemManipulator.Move(slot3.ContainedItem, to, state.inventoryController, false), ref state);
             }
         }
-        GClass3393 to2 = struct904_0.sortingTableGrid.FindLocationForItem(item2);
-        GClass3470.smethod_5(InteractionsHandlerClass.Move(item2, to2, struct904_0.inventoryController), ref struct904_0);
+        GridItemAddress to2 = state.sortingTableGrid.FindLocationForItem(item2);
+        WeaponAssembler.CG_AssembleAsync1(ItemManipulator.Move(item2, to2, state.inventoryController, false), ref state);
     }
 }

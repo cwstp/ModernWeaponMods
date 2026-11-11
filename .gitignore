@@ -1,3 +1,16 @@
-bin/
-obj/
+# Build output
+[Bb]in/
+[Oo]bj/
+[Aa]rtifacts/
+
+# IDE and user-specific files
+.vs/
+.idea/
 *.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Test output
+[Tt]est[Rr]esults/
+*.trx

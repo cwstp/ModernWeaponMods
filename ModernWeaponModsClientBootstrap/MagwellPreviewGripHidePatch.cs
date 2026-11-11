@@ -16,10 +16,10 @@ namespace ModernWeaponModsClient;
 /// below the inspect preview) -- shows just the magwell + its full nested-mod subtree on an empty
 /// background, with nothing to hide the gap, so the grip appears to float disconnected.
 ///
-/// Both isolated-render paths bottom out in PoolManagerClass, but via two DIFFERENT overloads that each
+/// Both isolated-render paths bottom out in EFT.ObjectsFactory, but via two DIFFERENT overloads that each
 /// need their own Harmony patch:
 /// - CreateCleanLootPrefab (sync) -- used by EFT.UI.WeaponModding.WeaponPreview for the big 3D preview.
-/// - CreateCleanLootPrefabAsync (Task-returning) -- used by GClass926.RenderModel, the auto-generated
+/// - CreateCleanLootPrefabAsync (Task-returning) -- used by EFT's auto-generated
 ///   icon renderer used anywhere an ItemView shows this item (including ModSlotView's per-slot grid).
 ///
 /// Both patches only touch the freshly-spawned, throwaway GameObject built for that one render call --
@@ -75,7 +75,7 @@ internal static class MagwellRenderFix
     }
 }
 
-[HarmonyPatch(typeof(PoolManagerClass), "CreateCleanLootPrefab")]
+[HarmonyPatch(typeof(EFT.ObjectsFactory), "CreateCleanLootPrefab")]
 public static class MagwellPreviewGripHidePatch
 {
     [HarmonyPostfix]
@@ -85,7 +85,7 @@ public static class MagwellPreviewGripHidePatch
     }
 }
 
-[HarmonyPatch(typeof(PoolManagerClass), "CreateCleanLootPrefabAsync")]
+[HarmonyPatch(typeof(EFT.ObjectsFactory), "CreateCleanLootPrefabAsync")]
 public static class MagwellIconGripHidePatch
 {
     [HarmonyPostfix]
